@@ -39,8 +39,6 @@ fn to_vec(maze: &Maze) -> Vec<Vec<bool>> {
     grid
 }
 
-// alternativa mai eficienta in cazul acesta este djikstra (speranta mea este sa implementez si djikstra imediat)
-
 fn bfs(maze: &Vec<Vec<bool>>, start: &Point, end: &Point, w: isize, h: isize) -> Option<i32>
 {
     let mut dq: VecDeque<(usize, usize)> = VecDeque::new();
