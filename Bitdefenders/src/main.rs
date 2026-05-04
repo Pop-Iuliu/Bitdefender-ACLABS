@@ -6,12 +6,12 @@ mod pathfinding;
 use crate::pathfinding::find_next_step;
 mod protocol;
 use crate::protocol::{
-    ChallengeArgs, EndMatchArgs, ErrorArgs, HelloArgs, LoginArgs, MoveArgs, PracticeArgs,
-    ReadyArgs, ShootArgs, StartMatchArgs, StartTurnArgs,
+    ChallengeArgs, EndMatchArgs, ErrorArgs, HelloArgs, Hero, LoginArgs, MoveArgs, PracticeArgs,
+    ReadyArgs, ShootArgs, StartMatchArgs, StartTurnArgs, Wall,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-const DEBUG: bool = false;
+const DEBUG: bool = false; // !!! Debug pt a afisa ce trimitem catre websocket
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", content = "args", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -32,6 +32,47 @@ enum ClientMessage {
     Challenge(ChallengeArgs),
     Move(MoveArgs),
     Shoot(ShootArgs),
+}
+
+fn shootable(al_meu: &Hero, inamic: &Hero, walls: &[Wall]) -> bool {
+    let wall_set: HashSet<(i32, i32)> = walls.iter().map(|w| (w.x, w.y)).collect();
+    let dx: i32 = (inamic.x - al_meu.x).abs();
+    let dy: i32 = -(inamic.y - al_meu.y).abs();
+
+    let signum = |x, y| if x < y { 1 } else { -1 };
+    let sx: i32 = signum(al_meu.x, inamic.x);
+    let sy: i32 = signum(al_meu.y, inamic.y);
+
+    let mut err: i128 = (dx + dy) as i128;
+
+    let (mut x, mut y) = (al_meu.x, al_meu.y);
+    let mut it = 0;
+    while true {
+        if (x, y) == (inamic.x, inamic.y) {
+            break;
+        }
+
+        if wall_set.contains(&(x, y)) {
+            return false;
+        }
+        if it > 1000 {
+            println!("Warning : prea multe iterari (shootable fn)\n");
+            return true; // hmm
+        }
+        it += 1;
+        let e2: i128 = 2 * err;
+
+        if e2 >= (dy as i128) {
+            err += dy as i128;
+            x += sx * 3;
+        }
+
+        if e2 <= (dx as i128) {
+            err += dx as i128;
+            y += sy * 3;
+        }
+    }
+    true
 }
 
 struct MatchInfo {
@@ -119,6 +160,7 @@ impl Bot {
 
             if let Some(t) = target
                 && hero.cooldown == 0
+                && shootable(hero, t, &args.state.walls)
             {
                 orders.push(ClientMessage::Shoot(ShootArgs {
                     hero_id: hero.id,
@@ -140,13 +182,14 @@ impl Bot {
 
             if am_la_rally && let Some(altul) = altul {
                 let dist = (altul.x - hero.x).abs().max((altul.y - hero.y).abs());
-                if dist > 8
+                if dist > 12
                     && (hero.x, hero.y) == (self.second_hero_global.0, self.second_hero_global.1)
                 {
                     orders.push(ClientMessage::Move(MoveArgs {
                         hero_id: hero.id,
                         x: hero.x,
                         y: hero.y,
+                        comment: "hmm stau 👀".to_string(),
                     }));
                     continue;
                 }
@@ -191,6 +234,7 @@ impl Bot {
                     hero_id: hero.id,
                     x: new_x,
                     y: new_y,
+                    comment: "te voi prinde 👀".to_string(),
                 }));
             }
         }
