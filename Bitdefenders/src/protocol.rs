@@ -1,4 +1,4 @@
-// otocol/protocol.rs
+//  protocol.rs
 //! Bit Defenders — WebSocket message envelope: `{ "command": string, "args": object }`.
 //! All commands use JSON objects for `args` (may be empty `{}`).
 
@@ -43,10 +43,10 @@ pub struct ChallengeArgs {
 pub struct PracticeArgs {
     #[serde(default)]
     pub seed: Option<u32>,
+    pub my_id: i32,
 }
 
 // --- Match ---
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: i32,
@@ -139,6 +139,7 @@ pub struct MoveArgs {
     pub hero_id: i32,
     pub x: i32,
     pub y: i32,
+    pub comment: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

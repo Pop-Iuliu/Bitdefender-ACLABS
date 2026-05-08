@@ -34,21 +34,25 @@ enum ClientMessage {
     Shoot(ShootArgs),
 }
 
+// to do inca ceva : sa le bag intr-un alt fisier ca tbh e ceva clutter
+fn hero_la_far(hero: &Hero, far_x: i32, far_y: i32) -> bool {
+    hero.x == far_x && hero.y == far_y
+}
+
 fn shootable(al_meu: &Hero, inamic: &Hero, walls: &[Wall]) -> bool {
     let wall_set: HashSet<(i32, i32)> = walls.iter().map(|w| (w.x, w.y)).collect();
     let dx: i32 = (inamic.x - al_meu.x).abs();
     let dy: i32 = -(inamic.y - al_meu.y).abs();
 
-    let signum = |x, y| if x < y { 1 } else { -1 };
-    let sx: i32 = signum(al_meu.x, inamic.x);
-    let sy: i32 = signum(al_meu.y, inamic.y);
+    let sx: i32 = (inamic.x - al_meu.x).signum();
+    let sy: i32 = (inamic.y - al_meu.y).signum();
 
-    let mut err: i128 = (dx + dy) as i128;
+    let mut err = dx + dy;
 
     let (mut x, mut y) = (al_meu.x, al_meu.y);
     let mut it = 0;
-    while true {
-        if (x, y) == (inamic.x, inamic.y) {
+    loop {
+        if (x - inamic.x).abs() <= 1 && (y - inamic.y).abs() <= 1 {
             break;
         }
 
@@ -57,19 +61,19 @@ fn shootable(al_meu: &Hero, inamic: &Hero, walls: &[Wall]) -> bool {
         }
         if it > 1000 {
             println!("Warning : prea multe iterari (shootable fn)\n");
-            return true; // hmm
+            return false;
         }
         it += 1;
-        let e2: i128 = 2 * err;
+        let e2 = 2 * err;
 
-        if e2 >= (dy as i128) {
-            err += dy as i128;
-            x += sx * 3;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
         }
 
-        if e2 <= (dx as i128) {
-            err += dx as i128;
-            y += sy * 3;
+        if e2 <= dx {
+            err += dx;
+            y += sy;
         }
     }
     true
@@ -80,6 +84,7 @@ struct MatchInfo {
     width: i32,
     height: i32,
     rally: (i32, i32),
+    patrol_far: (i32, i32),
 }
 
 impl MatchInfo {
@@ -89,6 +94,7 @@ impl MatchInfo {
             width: 0,
             height: 0,
             rally: (0, 0),
+            patrol_far: (0, 0),
         }
     }
 }
@@ -117,7 +123,10 @@ impl Bot {
 
     fn on_ready(&mut self) -> Vec<ClientMessage> {
         println!("gata de joaca cum s-ar zice");
-        vec![ClientMessage::Practice(PracticeArgs { seed: None })]
+        vec![ClientMessage::Practice(PracticeArgs {
+            seed: None,
+            my_id: 1,
+        })]
     }
 
     fn on_end_match(&mut self, args: EndMatchArgs) -> Vec<ClientMessage> {
@@ -139,6 +148,27 @@ impl Bot {
         let second_hero = &my_player.unwrap().heroes[1]; // al doilea hero
         self.second_hero_global = (second_hero.x, second_hero.y);
         self.info.rally = (second_hero.x, second_hero.y);
+        let enemy_player = args
+            .config
+            .players
+            .iter()
+            .find(|p| p.id != self.info.my_player_id)
+            .expect("nu găsesc adversarul");
+
+        let enemy_avg_y =
+            enemy_player.heroes.iter().map(|h| h.y).sum::<i32>() / enemy_player.heroes.len() as i32;
+
+        let target_y = if enemy_avg_y > self.info.rally.1 {
+            self.info.height - 2
+        } else {
+            1
+        };
+
+        self.info.patrol_far = (self.info.rally.0, target_y);
+        println!(
+            "rally: {:?}, patrol_far: {:?}",
+            self.info.rally, self.info.patrol_far
+        );
 
         vec![]
     }
@@ -171,6 +201,7 @@ impl Bot {
             }
 
             let (rally_x, rally_y) = self.info.rally;
+            let (far_x, far_y) = self.info.patrol_far;
 
             let altul = args
                 .state
@@ -199,18 +230,18 @@ impl Bot {
                 (rally_x, rally_y)
             } else {
                 self.going_down.insert(hero.id, true);
-                (rally_x, self.info.height - 2)
+                (far_x, far_y)
             };
-
+            // reminder sa schimb numele hashmap ului, going down e misleading !!! :)
             let (final_x, final_y) = if let Some(&going_down) = self.going_down.get(&hero.id) {
-                if going_down && hero.y >= self.info.height - 2 {
+                if going_down && hero_la_far(hero, far_x, far_y) {
                     self.going_down.insert(hero.id, false);
                     (rally_x, rally_y)
-                } else if !going_down && hero.y <= rally_y {
+                } else if !going_down && hero.x == rally_x && hero.y == rally_y {
                     self.going_down.insert(hero.id, true);
-                    (rally_x, self.info.height - 2)
+                    (far_x, far_y)
                 } else if going_down {
-                    (rally_x, self.info.height - 2)
+                    (far_x, far_y)
                 } else {
                     (rally_x, rally_y)
                 }
