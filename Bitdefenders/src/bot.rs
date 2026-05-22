@@ -1,9 +1,6 @@
-// Bot.rs
-
-use std::collections::{HashMap, HashSet};
-
 use serde::Serialize;
 
+use crate::Mode;
 use crate::pathfinding::find_next_step;
 use crate::protocol::{
     ChallengeArgs, EndMatchArgs, ErrorArgs, HelloArgs, Hero, LoginArgs, MoveArgs, PracticeArgs,
@@ -20,77 +17,14 @@ pub enum ClientMessage {
     Shoot(ShootArgs),
 }
 
-pub fn hero_la_far(hero: &Hero, far_x: i32, far_y: i32) -> bool {
-    hero.x == far_x && hero.y == far_y
-}
-
-pub fn shootable(al_meu: &Hero, inamic: &Hero, walls: &[Wall]) -> bool {
-    let mut wall_set: HashSet<(i32, i32)> = HashSet::new();
-    for w in walls {
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                wall_set.insert((w.x + dx, w.y + dy));
-            }
-        }
-    }
-    let dx: i32 = (inamic.x - al_meu.x).abs();
-    let dy: i32 = -(inamic.y - al_meu.y).abs();
-
-    let sx: i32 = (inamic.x - al_meu.x).signum();
-    let sy: i32 = (inamic.y - al_meu.y).signum();
-
-    let mut err = dx + dy;
-
-    let (mut x, mut y) = (al_meu.x, al_meu.y);
-    let mut it = 0;
-    loop {
-        if (x - inamic.x).abs() <= 1 && (y - inamic.y).abs() <= 1 {
-            break;
-        }
-
-        if wall_set.contains(&(x, y)) {
-            return false;
-        }
-        if it > 1000 {
-            println!("Warning : prea multe iterari (shootable fn)\n");
-            return false;
-        }
-        it += 1;
-        let e2 = 2 * err;
-
-        if e2 >= dy {
-            err += dy;
-            x += sx;
-        }
-
-        if e2 <= dx {
-            err += dx;
-            y += sy;
-        }
-    }
-    true
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Point {
-    pub x: i32,
-    pub y: i32,
-}
-
-#[derive(Debug, Clone)]
-pub struct EnemyMemory {
-    pub pos: Point,
-    pub seen_turn: i32,
-    pub hp: i32,
-    pub cooldown: i32,
+fn shootable(al_meu: &Hero, inamic: &Hero, walls: &[Wall]) -> bool {
+    crate::geometry::has_line_of_sight((al_meu.x, al_meu.y), (inamic.x, inamic.y), walls)
 }
 
 pub struct MatchInfo {
     pub my_player_id: i32,
     pub width: i32,
     pub height: i32,
-    pub rally: (i32, i32),
-    pub patrol_far: (i32, i32),
 }
 
 impl MatchInfo {
@@ -99,44 +33,94 @@ impl MatchInfo {
             my_player_id: 0,
             width: 0,
             height: 0,
-            rally: (0, 0),
-            patrol_far: (0, 0),
         }
     }
 }
 
 pub struct Bot {
     pub info: MatchInfo,
-    pub going_down: HashMap<i32, bool>,
-    pub second_hero_global: (i32, i32), // sorry for this
-    pub enemies: HashMap<i32, EnemyMemory>,
     pub current_turn: i32,
+    name: String,
+    mode: Mode,
+    seed: Option<u32>,
+    my_id: i32,
+    challenge_target: Option<String>,
+    ranked: bool,
+}
+
+pub fn valid_moves(pos: (i32, i32), walls: &[Wall], width: i32, height: i32) -> Vec<(i32, i32)> {
+    let d = [
+        (0, 0),
+        (3, 0),
+        (-3, 0),
+        (0, 3),
+        (0, -3),
+        (3, 3),
+        (3, -3),
+        (-3, 3),
+        (-3, -3),
+    ];
+
+    let mut moves = Vec::new();
+    for (dx, dy) in d {
+        let nx = pos.0 + dx;
+        let ny = pos.1 + dy;
+
+        if nx < 0 || ny < 0 || nx >= width || ny >= height {
+            continue;
+        }
+
+        if walls.iter().any(|w| w.x == nx && w.y == ny) {
+            continue;
+        }
+
+        moves.push((nx, ny));
+    }
+
+    moves
 }
 
 impl Bot {
-    pub fn new() -> Self {
+    pub fn new(
+        name: String,
+        mode: Mode,
+        seed: Option<u32>,
+        my_id: i32,
+        challenge_target: Option<String>,
+        ranked: bool,
+    ) -> Self {
         Self {
             info: MatchInfo::new(),
-            going_down: HashMap::new(),
-            second_hero_global: (0, 0),
-            enemies: HashMap::new(),
             current_turn: 0,
+            name,
+            mode,
+            seed,
+            my_id,
+            challenge_target,
+            ranked,
         }
     }
 
     pub fn on_hello(&mut self, args: HelloArgs) -> Vec<ClientMessage> {
         vec![ClientMessage::Login(LoginArgs {
-            name: "Pop-Iuliu".into(),
+            name: self.name.clone(),
             version: args.version,
         })]
     }
 
     pub fn on_ready(&mut self) -> Vec<ClientMessage> {
         println!("gata de joaca cum s-ar zice");
-        vec![ClientMessage::Practice(PracticeArgs {
-            seed: None,
-            my_id: 1,
-        })]
+        match self.mode {
+            Mode::Practice => vec![ClientMessage::Practice(PracticeArgs {
+                seed: self.seed,
+                my_id: self.my_id,
+            })],
+            Mode::Challenge => vec![ClientMessage::Challenge(ChallengeArgs {
+                name: self.challenge_target.clone(),
+                seed: self.seed,
+                ranked: Some(self.ranked),
+            })],
+        }
     }
 
     pub fn on_end_match(&mut self, args: EndMatchArgs) -> Vec<ClientMessage> {
@@ -148,43 +132,13 @@ impl Bot {
         self.info.my_player_id = args.your_player_id;
         self.info.height = args.config.height;
         self.info.width = args.config.width;
-
-        let my_player = args
-            .config
-            .players
-            .iter()
-            .find(|p| p.id == self.info.my_player_id)
-            .expect("nu ma gasesc");
-
-        let second_hero = &my_player.heroes[1];
-        self.second_hero_global = (second_hero.x, second_hero.y);
-        self.info.rally = (second_hero.x, second_hero.y);
-
-        let enemy_player = args
-            .config
-            .players
-            .iter()
-            .find(|p| p.id != self.info.my_player_id)
-            .expect("nu gasesc adversarul");
-
-        let enemy_avg_y =
-            enemy_player.heroes.iter().map(|h| h.y).sum::<i32>() / enemy_player.heroes.len() as i32;
-
-        let target_y = if enemy_avg_y > self.info.rally.1 {
-            self.info.height - 2
-        } else {
-            1
-        };
-
-        self.info.patrol_far = (self.info.rally.0, target_y);
-
         vec![]
     }
 
     pub fn on_start_turn(&mut self, args: StartTurnArgs) -> Vec<ClientMessage> {
         self.current_turn = args.turn;
 
-        for hero in &args.state.heroes {
+        /*for hero in &args.state.heroes {
             if hero.owner_id == self.info.my_player_id {
                 continue;
             }
@@ -203,101 +157,177 @@ impl Bot {
             );
         }
 
-        self.enemies.retain(|_, mem| args.turn - mem.seen_turn <= 8);
+        self.enemies.retain(|_, mem| args.turn - mem.seen_turn <= 8);  */
+
+        let mut predicted_state = args.state.clone();
+        for h in &mut predicted_state.heroes {
+            if h.owner_id != self.info.my_player_id && h.hp > 0 {
+                let (px, py) = crate::evaluator::predict_enemy_pos(
+                    h,
+                    &args.state,
+                    self.info.my_player_id,
+                    &args.state.walls,
+                    self.info.width,
+                    self.info.height,
+                );
+                h.x = px;
+                h.y = py;
+            }
+        }
+
         let mut orders: Vec<ClientMessage> = Vec::new();
 
-        let target = args
-            .state
-            .heroes
-            .iter()
-            .find(|h| h.owner_id != self.info.my_player_id);
+        let start = std::time::Instant::now();
 
         for hero in &args.state.heroes {
             if hero.owner_id != self.info.my_player_id {
                 continue;
             }
 
-            if let Some(t) = target
-                && hero.cooldown == 0
-                && shootable(hero, t, &args.state.walls)
-            {
-                orders.push(ClientMessage::Shoot(ShootArgs {
-                    hero_id: hero.id,
-                    x: t.x,
-                    y: t.y,
-                }));
-                continue;
-            }
-
-            let (rally_x, rally_y) = self.info.rally;
-            let (far_x, far_y) = self.info.patrol_far;
-
-            let altul = args
+            let target = args
                 .state
                 .heroes
                 .iter()
-                .find(|h| h.owner_id == self.info.my_player_id && h.id != hero.id);
+                .filter(|h| h.owner_id != self.info.my_player_id && h.hp > 0)
+                .min_by_key(|h| {
+                    let dist = (h.x - hero.x).abs().max((h.y - hero.y).abs());
+                    (dist, h.hp)
+                });
 
-            let am_la_rally = hero.x == rally_x && hero.y == rally_y;
+            let imminent_projectile = args
+                .state
+                .projectiles
+                .iter()
+                .any(|p| crate::geometry::chebyshev_distance((hero.x, hero.y), (p.x, p.y)) < 7);
 
-            if am_la_rally && let Some(altul) = altul {
-                let dist = (altul.x - hero.x).abs().max((altul.y - hero.y).abs());
-                if dist > 12
-                    && (hero.x, hero.y) == (self.second_hero_global.0, self.second_hero_global.1)
+            if let Some(t) = target {
+                if hero.cooldown == 0
+                    && !imminent_projectile
+                    && shootable(hero, t, &args.state.walls)
                 {
-                    orders.push(ClientMessage::Move(MoveArgs {
+                    let predicted = crate::evaluator::predict_enemy_pos(
+                        t,
+                        &args.state,
+                        self.info.my_player_id,
+                        &args.state.walls,
+                        self.info.width,
+                        self.info.height,
+                    );
+
+                    let (shoot_x, shoot_y) = if crate::geometry::has_line_of_sight(
+                        (hero.x, hero.y),
+                        predicted,
+                        &args.state.walls,
+                    ) {
+                        predicted
+                    } else {
+                        (t.x, t.y) // fallback la pozitia curenta
+                    };
+
+                    orders.push(ClientMessage::Shoot(ShootArgs {
                         hero_id: hero.id,
-                        x: hero.x,
-                        y: hero.y,
-                        comment: "hmm stau 👀".to_string(),
+                        x: shoot_x,
+                        y: shoot_y,
                     }));
                     continue;
                 }
             }
 
-            let (dest_x, dest_y) = if hero.x != rally_x || hero.y != rally_y {
-                (rally_x, rally_y)
-            } else {
-                self.going_down.insert(hero.id, true);
-                (far_x, far_y)
-            };
+            let enemies_visible: Vec<&Hero> = args
+                .state
+                .heroes
+                .iter()
+                .filter(|h| h.owner_id != self.info.my_player_id)
+                .collect();
 
-            let (final_x, final_y) = if let Some(&going_down) = self.going_down.get(&hero.id) {
-                if going_down && hero_la_far(hero, far_x, far_y) {
-                    self.going_down.insert(hero.id, false);
-                    (rally_x, rally_y)
-                } else if !going_down && hero.x == rally_x && hero.y == rally_y {
-                    self.going_down.insert(hero.id, true);
-                    (far_x, far_y)
-                } else if going_down {
-                    (far_x, far_y)
+            if enemies_visible.is_empty() {
+                let cx = (self.info.width / 2 / 3) * 3 + 1;
+                let cy = (self.info.height / 2 / 3) * 3 + 1;
+
+                if let Some((dx, dy)) = find_next_step(
+                    (hero.x, hero.y),
+                    (cx, cy),
+                    &args.state.walls,
+                    self.info.width,
+                    self.info.height,
+                ) {
+                    orders.push(ClientMessage::Move(MoveArgs {
+                        hero_id: hero.id,
+                        x: hero.x + dx,
+                        y: hero.y + dy,
+                        comment: "👁️👁️".to_string(),
+                    }));
                 } else {
-                    (rally_x, rally_y)
+                    orders.push(ClientMessage::Move(MoveArgs {
+                        hero_id: hero.id,
+                        x: hero.x,
+                        y: hero.y,
+                        comment: "👁️👁️".to_string(),
+                    }));
                 }
-            } else {
-                (dest_x, dest_y)
-            };
+                continue;
+            }
 
-            let next_step = find_next_step(
+            let ally_pos = args
+                .state
+                .heroes
+                .iter()
+                .find(|h| h.owner_id == self.info.my_player_id && h.id != hero.id)
+                .map(|a| (a.x, a.y))
+                .unwrap_or((-1, -1));
+
+            let moves = valid_moves(
                 (hero.x, hero.y),
-                (final_x, final_y),
                 &args.state.walls,
                 self.info.width,
                 self.info.height,
             );
 
-            if let Some((dx, dy)) = next_step {
-                let new_x = hero.x + dx;
-                let new_y = hero.y + dy;
+            let default = (hero.x, hero.y);
+            let best = moves
+                .iter()
+                .max_by_key(|pos| {
+                    crate::evaluator::best_score(
+                        **pos,
+                        hero,
+                        &predicted_state,
+                        self.info.my_player_id,
+                        ally_pos,
+                        &args.state.walls,
+                        self.info.width,
+                        self.info.height,
+                        3,
+                    )
+                })
+                .unwrap_or(&default);
 
-                orders.push(ClientMessage::Move(MoveArgs {
-                    hero_id: hero.id,
-                    x: new_x,
-                    y: new_y,
-                    comment: "te voi prinde 👀".to_string(),
-                }));
-            }
+            orders.push(ClientMessage::Move(MoveArgs {
+                hero_id: hero.id,
+                x: best.0,
+                y: best.1,
+                comment: "👀".to_string(),
+            }));
+            eprintln!(
+                "mutarea {} erou {} -> ({},{}) scor={}",
+                args.turn,
+                hero.id,
+                best.0,
+                best.1,
+                crate::evaluator::best_score(
+                    *best,
+                    hero,
+                    &predicted_state,
+                    self.info.my_player_id,
+                    ally_pos,
+                    &args.state.walls,
+                    self.info.width,
+                    self.info.height,
+                    4,
+                )
+            );
         }
+
+        eprintln!("mutarea {} a durat {:?}", args.turn, start.elapsed());
         orders
     }
 

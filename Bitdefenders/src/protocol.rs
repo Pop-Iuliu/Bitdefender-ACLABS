@@ -37,6 +37,8 @@ pub struct ChallengeArgs {
     pub name: Option<String>,
     #[serde(default)]
     pub seed: Option<u32>,
+    #[serde(default)]
+    pub ranked: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
